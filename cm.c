@@ -79,7 +79,7 @@ void receive_mem(){
                 perror("read");
             }
             rcm->addr = data;
-
+            printf("Stored data: %p\n", data);
             list_add_tail(&rcm->ele, &datalist);
         }
         else if(rcm->rw == 0){
@@ -88,6 +88,7 @@ void receive_mem(){
             list_for_each_entry_safe(obj, next, &datalist, ele){
                 size_t data_size = -1;
                 if (obj->ptr == target_ptr){
+                    printf("Found data: %p\n", obj->ptr);
                     data_size = obj->size;
                     send(rec_socket, &data_size, sizeof(data_size), 0);
                     send(rec_socket, obj->addr, obj->size, 0);
@@ -176,29 +177,39 @@ int client(){
     return 1;
 }
 
-void test(){
-    for (int i = 0; i < 8888; i++){
-        char* page = "uuuu";
-        char* page_ptr = page;
-        send_mem(page_ptr, page, sizeof(page));
-    }
-}
-
 int main(int argc, char *argv[]){
     page_size = sysconf(_SC_PAGE_SIZE);
     char* test_page;
     if (argc == 1){
         printf("Server Connecting\n");
         server();
-        test();
         char* page = "DDDDDD";
         char* page_ptr = page;
         printf("Init data: %p\n", page);
         printf("Init addr: %p\n", page_ptr);
-        test_page = page;
-        send_mem(page_ptr, page, sizeof(page));
-        test();
         
+        send_mem(page_ptr, page, sizeof(page));
+
+        char* page1 = "YYYYYY";
+        char* page_ptr1 = page1;
+        printf("Init data: %p\n", page1);
+        send_mem(page_ptr1, page1, sizeof(page1));
+
+        char* page2 = "SSSSSSS";
+        char* page_ptr2 = page2;
+        printf("Init data: %p\n", page2);
+        send_mem(page_ptr2, page2, sizeof(page2));
+
+        char* page3 = "XXXXXX";
+        char* page_ptr3 = page3;
+        printf("Init data: %p\n", page3);
+        test_page = page3;
+        send_mem(page_ptr3, page3, sizeof(page3));
+
+        char* page4 = "ZZZZZZ";
+        char* page_ptr4 = page4;
+        printf("Init data: %p\n", page4);
+        send_mem(page_ptr4, page4, sizeof(page4));
     }
     else if(argc == 2){
         printf("Client Connecting\n");
