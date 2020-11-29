@@ -1,7 +1,8 @@
 CUR_DIR := $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
 
 CC = gcc
-CFLAGS += -g -O2 -Werror -Wall -lpthread
+#-Werror -Wall
+CFLAGS += -g -O2  -lpthread
 LDFLAGS +=
 
 DEPS_DIR  := $(CUR_DIR)/.deps$(LIB_SUFFIX)
