@@ -1,114 +1,131 @@
 #include <sys/types.h>
 #include <stdio.h>
-#include <linux/userfaultfd.h>
 #include <errno.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <fcntl.h>
 #include <signal.h>
-#include <poll.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/ioctl.h>
-#include <poll.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <linux/types.h>
 #include "list.h"
+#include "tree.h"  
 
 #define PORT 1551
 int send_socket;
 int rec_socket;
 int page_size;
 
-static LIST_HEAD(datalist);
-
-typedef struct{
-	void* ptr;
+struct block{
+    void* ptr;
     void* addr;
     size_t size;
     int rw; 
-    struct list_head ele;
-} com_mem;
+    RB_ENTRY(block) node;
+};
 
+RB_HEAD(datatree, block) tree;
+
+//test code
+int up = 100;
+uint64_t rec_keys[100];
+int key_index = 0;
+//test code
+
+static int compare_size(struct block * a, struct block * b)
+{
+    if (a->ptr < b->ptr)
+        return -1;
+    else if (a->ptr > b->ptr)
+	    return 1;
+    else if (a->ptr == b->ptr)
+        return 0;
+    else
+	    return a < b ? -1 : 1;    
+}
+
+RB_GENERATE_STATIC(datatree, block, node, compare_size); 
 
 void send_mem(void* org_ptr, void* com_addr, size_t size){
-    com_mem cm;
+    struct block cm;
     cm.ptr = org_ptr;
     cm.addr = com_addr;
     cm.size = size;
     cm.rw = 1;
-    send(send_socket, &cm, sizeof(com_mem), 0);
+    send(send_socket, &cm, sizeof(struct block), 0);
     send(send_socket, com_addr, size, 0);
 }
 
-void back_mem(void* ptr){
-    com_mem cm;
+void* back_mem(void* ptr){
+    struct block cm;
     cm.ptr = ptr;
     cm.addr = NULL;
     cm.size = 0;
     cm.rw = 0;
     size_t data_size;
-    send(send_socket, &cm, sizeof(com_mem), 0);
+    send(send_socket, &cm, sizeof(struct block), 0);
     if (read(send_socket, &data_size, sizeof(size_t)) < 0){
         perror("read");
     }
     if (data_size == -1){
         perror("no match data");
+        exit(0);
     }
-    void* back_data; //= (void*)malloc(data_size);
-    if (read(send_socket, &back_data, data_size) < 0){
+    void* newptr = NULL;
+    char back_data[data_size];
+    if (read(send_socket, back_data, data_size) < 0){
         perror("read");
     }
-    printf("Back mem: %s\n", (char*)&back_data);
+    //printf("Back Data: %s\n", back_data);
+    newptr = back_data;
+    return newptr;
 }
 
 void receive_mem(){
+    RB_INIT(&tree);
     for (;;){
-        com_mem * rcm = ( com_mem *)malloc(sizeof(com_mem));
+        struct block * rcm = (struct block *)malloc(sizeof(struct block));
         rcm->rw = -1;
-        if (read(rec_socket, rcm, sizeof(com_mem)) < 0){
+        if (read(rec_socket, rcm, sizeof(struct block)) < 0){
             perror("read");
         }
         if(rcm->rw == 1){
-            void * data = (void*)malloc(rcm->size);
+            void * data = (void*)malloc(page_size);
             if (read(rec_socket, data, rcm->size) < 0){
                 perror("read");
             }
             rcm->addr = data;
-            printf("Stored data: %p\n", data);
-            list_add_tail(&rcm->ele, &datalist);
+            //test code
+            rec_keys[key_index] = (uint64_t)rcm->ptr;
+            printf("key %d: %p\n", key_index, rcm->ptr);
+            key_index++;
+            //test code
+            RB_INSERT(datatree, &tree, rcm);
         }
         else if(rcm->rw == 0){
-            void* target_ptr = rcm->ptr;
-            com_mem *obj, *next;
-            list_for_each_entry_safe(obj, next, &datalist, ele){
-                size_t data_size = -1;
-                if (obj->ptr == target_ptr){
-                    printf("Found data: %p\n", obj->ptr);
-                    data_size = obj->size;
-                    send(rec_socket, &data_size, sizeof(data_size), 0);
-                    send(rec_socket, obj->addr, obj->size, 0);
-                    list_del(&obj->ele);
-                    free(obj);
-                    break;
-                }
+            struct block tblk;
+            tblk.ptr = rcm->ptr;
+            struct block * p = RB_NFIND(datatree, &tree, &tblk);
+            size_t data_size = -1;
+            if (p != NULL){
+                data_size = p->size;
+                send(rec_socket, &data_size, sizeof(data_size), 0);
+                send(rec_socket, p->addr, data_size, 0);
+                free(p->addr);
+                RB_REMOVE(datatree, &tree, p);
+            }
+            else{
                 send(send_socket, &data_size, sizeof(size_t), 0);
             }
         }
     }
     
-}
-
-void free_list(){
-    com_mem *obj, *next;
-    list_for_each_entry_safe(obj, next, &datalist, ele){
-        list_del(&obj->ele);
-        free(obj);
-    }
 }
 
 int server(){
@@ -177,39 +194,56 @@ int client(){
     return 1;
 }
 
+uint64_t rand_uint64_slow(void) {
+  uint64_t r = 0;
+  for (int i=0; i<64; i++) {
+    r = r*2 + rand()%2;
+  }
+  return r;
+}
+
+void test(){
+    
+    uint64_t keys[up];
+    char* datalist[up];
+    for (int i = 0; i < up; i++){
+        uint64_t ptr_key = rand_uint64_slow();
+        keys[i] = ptr_key;
+        int randomData = open("/dev/urandom", O_RDONLY);
+        char myRandomData[page_size];
+        if (read(randomData, myRandomData, page_size) < 0){
+            printf("Send Error");
+        }
+        
+        char * newdata = (char*)malloc(page_size);
+        strcpy(newdata, myRandomData);
+        datalist[i] = newdata;
+        printf("key %d: %p\n", i, (void*)ptr_key);
+        send_mem((void*)ptr_key, myRandomData, page_size);
+    }
+
+    
+    for (int i = 0; i < up; i++){
+        char* backData = (char*)back_mem((void*)keys[i]);
+        if (strcmp(backData, (char*)datalist[i]) == 0){
+            free(datalist[i]);
+            continue;
+        }
+        else{
+            printf("PAGE: %d error\n", i);
+            exit(0);
+        }
+    }
+    printf("all data back!\n");
+    
+}
+
 int main(int argc, char *argv[]){
     page_size = sysconf(_SC_PAGE_SIZE);
-    char* test_page;
+    //char* test_page;
     if (argc == 1){
-        printf("Server Connecting\n");
         server();
-        char* page = "DDDDDD";
-        char* page_ptr = page;
-        printf("Init data: %p\n", page);
-        printf("Init addr: %p\n", page_ptr);
-        
-        send_mem(page_ptr, page, sizeof(page));
-
-        char* page1 = "YYYYYY";
-        char* page_ptr1 = page1;
-        printf("Init data: %p\n", page1);
-        send_mem(page_ptr1, page1, sizeof(page1));
-
-        char* page2 = "SSSSSSS";
-        char* page_ptr2 = page2;
-        printf("Init data: %p\n", page2);
-        send_mem(page_ptr2, page2, sizeof(page2));
-
-        char* page3 = "XXXXXX";
-        char* page_ptr3 = page3;
-        printf("Init data: %p\n", page3);
-        test_page = page3;
-        send_mem(page_ptr3, page3, sizeof(page3));
-
-        char* page4 = "ZZZZZZ";
-        char* page_ptr4 = page4;
-        printf("Init data: %p\n", page4);
-        send_mem(page_ptr4, page4, sizeof(page4));
+        test();
     }
     else if(argc == 2){
         printf("Client Connecting\n");
@@ -221,9 +255,9 @@ int main(int argc, char *argv[]){
     }
 
     if (argc == 1){
-        back_mem(test_page);
+        
     }
 
-    free_list();
+    //free_list();
     return 1;
 }
